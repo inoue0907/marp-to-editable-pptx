@@ -1,0 +1,62 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #e8edf7;
+  background: #0a0d14;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 1024px; min-height: 100vh; background: radial-gradient(circle at 75% 0%, #17223b 0, #0a0d14 35%); }
+button, textarea { font: inherit; }
+
+.topbar {
+  height: 64px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; border-bottom: 1px solid #252b38; background: rgba(10,13,20,.88); backdrop-filter: blur(18px);
+}
+.brand { display: flex; align-items: center; gap: 11px; font-weight: 720; letter-spacing: -.02em; }
+.brand small { color: #78839a; font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; }
+.brand-mark { display:grid; place-items:center; width: 32px; height:32px; border-radius:9px; background:linear-gradient(135deg,#6d7cff,#a86cff); color:white; box-shadow:0 8px 24px #755cff42; }
+.actions { display:flex; align-items:center; gap:8px; }
+.file-button, button { border:1px solid #343c4e; border-radius:9px; padding:9px 13px; color:#dfe6f4; background:#171c27; cursor:pointer; font-size:12px; font-weight:650; transition:.18s ease; }
+.file-button:hover, button:hover { background:#222938; transform:translateY(-1px); }
+.file-button input { display:none; }
+.file-button.secondary { color:#9ba7bd; }
+button.primary { border-color:#7987ff; background:linear-gradient(135deg,#5868eb,#8759e6); box-shadow:0 8px 24px #6155db30; }
+button:disabled { opacity:.55; cursor:wait; transform:none; }
+
+main { height:calc(100vh - 64px); display:grid; grid-template-columns:minmax(420px, 43%) 1fr; }
+.editor-pane, .preview-pane { min-width:0; min-height:0; display:flex; flex-direction:column; }
+.editor-pane { border-right:1px solid #252b38; background:#0e121b; }
+.pane-title { height:44px; flex:none; display:flex; align-items:center; justify-content:space-between; padding:0 16px; border-bottom:1px solid #202633; color:#aeb9cc; font-size:12px; font-weight:650; letter-spacing:.02em; }
+.muted { color:#667188; font-weight:500; }
+textarea { width:100%; resize:none; border:0; outline:0; color:#d8deeb; background:#0e121b; padding:18px 20px; font:13px/1.65 "Cascadia Code","SFMono-Regular",Consolas,monospace; tab-size:2; }
+#markdown { flex:1; min-height:0; }
+details { flex:none; border-top:1px solid #252b38; }
+summary { cursor:pointer; padding:12px 16px; color:#9ca8bc; font-size:12px; font-weight:650; }
+summary span { margin-left:8px; color:#59657b; font-weight:500; }
+.css-editor { height:170px; border-top:1px solid #1b202b; }
+
+.preview-pane { background:#111621; }
+.preview { flex:1; min-height:0; overflow:auto; padding:28px; display:flex; flex-direction:column; align-items:center; gap:24px; }
+.preview > svg, .preview > div > svg { width:min(100%, 960px) !important; height:auto !important; flex:none; border-radius:5px; box-shadow:0 22px 55px #0008; }
+.preview > section { width:min(100%,960px); aspect-ratio:16/9; transform-origin:top left; overflow:hidden; box-shadow:0 22px 55px #0008; }
+.report { flex:none; max-height:150px; overflow:auto; margin:0 20px 18px; padding:14px 16px; border:1px solid #293143; border-radius:12px; color:#9da9bd; background:#151b27; font-size:12px; }
+.report.empty { color:#68758b; }
+.metrics { display:grid; grid-template-columns:auto auto auto auto auto auto; justify-content:start; align-items:baseline; gap:4px 10px; }
+.metrics strong { color:#dfe6f4; font-size:18px; }
+.metrics span { margin-right:18px; color:#6f7b91; }
+.report p { margin:8px 0 0; }
+.report ul { margin:10px 0 0; padding-left:20px; }
+.error-box { border-color:#6b2c3b; color:#ff9aaa; background:#24141a; }
+.status { color:#6f7c91; font-weight:500; }
+.status.working { color:#e8bb69; }
+.status.success { color:#68d59a; }
+.status.error { color:#f47f91; }
+
+.marp-conversion-host { position:fixed !important; left:-20000px !important; top:0 !important; width:1280px !important; pointer-events:none !important; }
+.marp-conversion-host svg[data-marpit-svg] { display:block !important; width:1280px !important; height:720px !important; }
+
+@media (max-width: 1150px) {
+  .brand small { display:none; }
+  main { grid-template-columns:44% 56%; }
+}
