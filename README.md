@@ -43,6 +43,42 @@ npm install
 npm run dev
 ```
 
+## VS Codeからワンボタン変換
+
+リポジトリをVS Codeで開き、変換したいMarp Markdownをアクティブにして
+`Ctrl+Shift+B` を押してください。標準ビルドタスク
+`Marp: Export editable PPTX` が現在のMarkdownを変換し、同じフォルダへ
+同名のPPTXを保存します。
+
+初回のみ依存関係をインストールしてください。
+
+```bash
+npm install
+```
+
+## CLI
+
+```bash
+npm run export -- ./slides.md
+```
+
+出力先とテーマCSSを明示する場合:
+
+```bash
+npm run export -- ./slides.md --theme ./themes/company.css --output ./dist/slides.pptx
+```
+
+`--theme` を省略すると、Markdownのfront matterにある `theme:` を読み取り、
+次の順にテーマCSSを検索します。
+
+1. Markdownと同じフォルダの `themes/<theme-name>.css`
+2. コマンド実行フォルダの `themes/<theme-name>.css`
+3. Markdownと同じフォルダの `theme.css`
+
+MarkdownおよびテーマCSSから参照するローカル画像は、それぞれのファイルを
+基準に解決されます。CLIはインストール済みのMicrosoft EdgeまたはGoogle
+Chromeをヘッドレスで使用します。
+
 ## 現在の変換方針
 
 - Marp Coreを唯一のMarkdown/CSSレンダラーとして使用
