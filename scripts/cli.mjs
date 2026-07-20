@@ -84,10 +84,51 @@ function themeName(markdown) {
   return frontMatter?.[1].match(/^theme:\s*["']?([^\s"']+)/m)?.[1] ?? ""
 }
 
+function parseJsonc(source) {
+  return JSON.parse(source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "")
+    .replace(/,\s*([}\]])/g, "$1"))
+}
+
+async function vscodeThemeCandidates(inputPath) {
+  const candidates = []
+  let directory = path.dirname(inputPath)
+  const root = path.parse(directory).root
+  while (true) {
+    const settingsPath = path.join(directory, ".vscode", "settings.json")
+    try {
+      const settings = parseJsonc(await fs.readFile(settingsPath, "utf8"))
+      const themes = settings["markdown.marp.themes"]
+      if (Array.isArray(themes)) {
+        for (const theme of themes) {
+          if (typeof theme === "string" && !/^https?:/i.test(theme)) candidates.push(path.resolve(directory, theme))
+        }
+      }
+    } catch { /* no settings at this level */ }
+    if (directory === root) break
+    directory = path.dirname(directory)
+  }
+  return candidates
+}
+
+async function cssThemeName(cssPath) {
+  try {
+    const css = await fs.readFile(cssPath, "utf8")
+    return css.match(/\/\*\s*@theme\s+([^*\s]+)\s*\*\//)?.[1] ?? ""
+  } catch {
+    return ""
+  }
+}
+
 async function detectTheme(inputPath, markdown, explicitTheme) {
   if (explicitTheme) return path.resolve(explicitTheme)
   const directory = path.dirname(inputPath)
   const name = themeName(markdown)
+  const configuredThemes = await vscodeThemeCandidates(inputPath)
+  for (const configuredTheme of configuredThemes) {
+    if (!name || await cssThemeName(configuredTheme) === name) return configuredTheme
+  }
   const candidates = [
     name && path.join(directory, "themes", `${name}.css`),
     name && path.join(process.cwd(), "themes", `${name}.css`),
@@ -150,7 +191,9 @@ async function main() {
     const url = server.resolvedUrls?.local[0]
     if (!url) throw new Error("Conversion server failed to start.")
     const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } })
+    page.on("pageerror", (error) => console.error(`[browser] ${error.message}`))
     await page.goto(url, { waitUntil: "networkidle" })
+    await page.waitForFunction(() => document.querySelector("#status")?.textContent === "プレビュー更新済み", null, { timeout: 60_000 })
     await page.evaluate(({ markdown, themeCss }) => {
       const markdownInput = document.querySelector("#markdown")
       const themeInput = document.querySelector("#theme-css")
@@ -159,10 +202,19 @@ async function main() {
       markdownInput.dispatchEvent(new Event("input", { bubbles: true }))
       themeInput.dispatchEvent(new Event("input", { bubbles: true }))
     }, { markdown, themeCss })
+    await page.waitForFunction(() => document.querySelector("#status")?.textContent === "プレビュー更新中…", null, { timeout: 60_000 })
     await page.waitForFunction(() => document.querySelector("#status")?.textContent === "プレビュー更新済み", null, { timeout: 60_000 })
     const downloadPromise = page.waitForEvent("download", { timeout: 120_000 })
+    const errorPromise = page.waitForFunction(() => document.querySelector("#status")?.textContent === "変換エラー", null, { timeout: 120_000 })
+      .then(async () => { throw new Error(await page.locator("#report").textContent() || "変換エラー") })
     await page.locator("#convert").click()
-    const download = await downloadPromise
+    let download
+    try {
+      download = await Promise.race([downloadPromise, errorPromise])
+    } catch (error) {
+      const status = await page.locator("#status").textContent().catch(() => "")
+      throw new Error(`${error instanceof Error ? error.message : String(error)}${status ? `\nStatus: ${status}` : ""}`)
+    }
     await fs.mkdir(path.dirname(outputPath), { recursive: true })
     await download.saveAs(outputPath)
     console.log(`Created: ${outputPath}`)

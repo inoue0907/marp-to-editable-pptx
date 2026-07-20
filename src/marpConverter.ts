@@ -9,6 +9,7 @@ import {
   SLIDE_W,
   SlideElement,
   SlideModel,
+  ShapeElement,
   TextElement,
   TextRun,
   TableElement,
@@ -106,7 +107,7 @@ function applyResolvedFonts(runs: TextRun[], style: CSSStyleDeclaration): TextRu
       const fontFace = run.code ? "Courier New" : isEastAsian ? eastAsian : latin
       const bold = Boolean(run.bold) || baseWeight >= 700 || (isEastAsian && baseWeight >= 600)
       const previous = resolved.at(-1)
-      if (previous && previous.fontFace === fontFace && previous.bold === bold && previous.italic === run.italic && previous.code === run.code && previous.mathLatex === run.mathLatex) {
+      if (previous && previous.fontFace === fontFace && previous.bold === bold && previous.italic === run.italic && previous.code === run.code && previous.fontSize === run.fontSize && previous.color === run.color && previous.mathLatex === run.mathLatex) {
         previous.text += character
       } else {
         resolved.push({ ...run, text: character, fontFace, bold })
@@ -119,9 +120,12 @@ function applyResolvedFonts(runs: TextRun[], style: CSSStyleDeclaration): TextRu
 function textRuns(root: Element, preserveVisualLines = false): TextRun[] {
   const runs: TextRun[] = []
   let lastLineTop: number | null = null
+  const rootStyle = getComputedStyle(root)
+  const visualLineThreshold = Math.max(4, px(rootStyle.fontSize, 16) * 0.45)
+  const preserveSourceLines = /^(pre|pre-wrap|break-spaces)$/.test(rootStyle.whiteSpace)
   const append = (text: string, state: Omit<TextRun, "text">) => {
     const previous = runs[runs.length - 1]
-    if (previous && previous.bold === state.bold && previous.italic === state.italic && previous.code === state.code) {
+    if (previous && previous.bold === state.bold && previous.italic === state.italic && previous.code === state.code && previous.fontSize === state.fontSize && previous.color === state.color) {
       previous.text += text
     } else {
       runs.push({ text, ...state })
@@ -130,7 +134,7 @@ function textRuns(root: Element, preserveVisualLines = false): TextRun[] {
   const visit = (node: Node, state: Omit<TextRun, "text">) => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent ?? ""
-      if (!preserveVisualLines) {
+      if (!preserveVisualLines || preserveSourceLines) {
         if (text) append(text, state)
         return
       }
@@ -139,30 +143,44 @@ function textRuns(root: Element, preserveVisualLines = false): TextRun[] {
         range.setStart(node, index)
         range.setEnd(node, index + 1)
         const rect = range.getClientRects()[0]
-        if (rect && lastLineTop !== null && Math.abs(rect.top - lastLineTop) > 1) {
+        const previousText = runs.at(-1)?.text ?? ""
+        if (rect && lastLineTop !== null && Math.abs(rect.top - lastLineTop) > visualLineThreshold && !previousText.endsWith("\n")) {
           append("\n", state)
         }
-        append(text[index], state)
+        // In normal HTML flow, source newlines/tabs are collapsed whitespace.
+        // They must not become extra PowerPoint paragraphs in addition to the
+        // visual line transition measured above.
+        if (/\s/.test(text[index])) {
+          const tail = runs.at(-1)?.text ?? ""
+          if (tail && !/[\s\n]$/.test(tail)) append(" ", state)
+        } else {
+          append(text[index], state)
+        }
         if (rect) lastLineTop = rect.top
       }
       return
     }
     if (!(node instanceof Element)) return
     const tag = node.tagName.toLowerCase()
+    const nodeStyle = getComputedStyle(node)
     const next = {
       bold: state.bold || tag === "strong" || tag === "b",
       italic: state.italic || tag === "em" || tag === "i",
       code: state.code || tag === "code",
+      fontSize: px(nodeStyle.fontSize, px(rootStyle.fontSize, 16)) * 72 / PX_PER_IN,
+      color: cssColor(nodeStyle.color),
     }
     if (tag === "br") {
-      runs.push({ text: "\n", ...next })
+      const tail = runs.at(-1)?.text ?? ""
+      if (!tail.endsWith("\n")) append("\n", next)
+      lastLineTop = null
       return
     }
     node.childNodes.forEach((child) => visit(child, next))
   }
   root.childNodes.forEach((child) => visit(child, {}))
   return runs
-    .map((run) => ({ ...run, text: run.text.replace(/[ \t]+\n/g, "\n") }))
+    .map((run) => ({ ...run, text: run.text.replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n") }))
     .filter((run) => run.text.length > 0)
 }
 
@@ -183,6 +201,49 @@ async function imageToDataUrl(src: string): Promise<string> {
     reader.onerror = () => reject(reader.error)
     reader.readAsDataURL(blob)
   })
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error("背景画像を読み込めませんでした"))
+    image.src = src
+  })
+}
+
+async function composeBackground(
+  background: string,
+  layers: string[],
+  positionedImages: ImageElement[],
+): Promise<string> {
+  const scale = 2
+  const canvas = document.createElement("canvas")
+  canvas.width = 1280 * scale
+  canvas.height = 720 * scale
+  const context = canvas.getContext("2d")
+  if (!context) throw new Error("背景合成用Canvasを作成できません")
+  context.fillStyle = background
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  for (const positioned of positionedImages) {
+    const image = await loadImage(positioned.src)
+    const x = positioned.x / SLIDE_W * canvas.width
+    const y = positioned.y / SLIDE_H * canvas.height
+    const w = positioned.w / SLIDE_W * canvas.width
+    const h = positioned.h / SLIDE_H * canvas.height
+    const imageRatio = image.naturalWidth / image.naturalHeight
+    const boxRatio = w / h
+    const sourceWidth = imageRatio > boxRatio ? image.naturalHeight * boxRatio : image.naturalWidth
+    const sourceHeight = imageRatio > boxRatio ? image.naturalHeight : image.naturalWidth / boxRatio
+    const sourceX = (image.naturalWidth - sourceWidth) / 2
+    const sourceY = (image.naturalHeight - sourceHeight) / 2
+    context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, w, h)
+  }
+  for (const layer of layers) {
+    const image = await loadImage(layer)
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  }
+  return canvas.toDataURL("image/png")
 }
 
 function offsetWithin(element: HTMLElement, ancestor: HTMLElement): { left: number; top: number } {
@@ -220,6 +281,42 @@ function elementBox(element: HTMLElement, slide: HTMLElement) {
     w: element.offsetWidth * sx,
     h: element.offsetHeight * sy,
   }
+}
+
+function isVisibleColor(value: string): boolean {
+  const alpha = value.match(/rgba?\([^)]*[,/]\s*([\d.]+)\s*\)$/)?.[1]
+  return value !== "transparent" && (alpha === undefined || Number(alpha) > 0)
+}
+
+function clientRectBox(rect: DOMRect, slide: HTMLElement) {
+  const slideRect = slide.getBoundingClientRect()
+  const logicalX = 1280 / slideRect.width
+  const logicalY = 720 / slideRect.height
+  return {
+    x: (rect.left - slideRect.left) * logicalX / PX_PER_IN,
+    y: (rect.top - slideRect.top) * logicalY / PX_PER_IN,
+    w: rect.width * logicalX / PX_PER_IN,
+    h: rect.height * logicalY / PX_PER_IN,
+  }
+}
+
+function elementDecorations(element: HTMLElement, slide: HTMLElement): ShapeElement[] {
+  const shapes: ShapeElement[] = []
+  const style = getComputedStyle(element)
+  const box = elementBox(element, slide)
+  if (element.tagName === "PRE" && isVisibleColor(style.backgroundColor)) {
+    shapes.push({ kind: "shape", shape: "rect", ...box, fill: cssColor(style.backgroundColor) })
+  }
+  if (element.tagName !== "PRE") {
+    element.querySelectorAll<HTMLElement>("code").forEach((code) => {
+      const codeStyle = getComputedStyle(code)
+      if (!isVisibleColor(codeStyle.backgroundColor)) return
+      Array.from(code.getClientRects()).forEach((rect) => {
+        shapes.push({ kind: "shape", shape: "rect", ...clientRectBox(rect, slide), fill: cssColor(codeStyle.backgroundColor) })
+      })
+    })
+  }
+  return shapes
 }
 
 function backgroundImageUrl(value: string): string | null {
@@ -282,6 +379,16 @@ function extractMath(markdown: string): { latex: string; display: boolean }[] {
 function textElement(element: HTMLElement, slide: HTMLElement): TextElement {
   const style = getComputedStyle(element)
   const box = elementBox(element, slide)
+  if (element.tagName === "PRE") {
+    const left = px(style.paddingLeft) / PX_PER_IN
+    const right = px(style.paddingRight) / PX_PER_IN
+    const top = px(style.paddingTop) / PX_PER_IN
+    const bottom = px(style.paddingBottom) / PX_PER_IN
+    box.x += left
+    box.y += top
+    box.w = Math.max(0.1, box.w - left - right)
+    box.h = Math.max(0.1, box.h - top - bottom)
+  }
   const fontPx = px(style.fontSize, 32)
   const lineHeightPx = style.lineHeight === "normal" ? fontPx * 1.2 : px(style.lineHeight, fontPx * 1.2)
   const valign = style.justifyContent === "center" ? "middle" : style.justifyContent === "flex-end" ? "bottom" : "top"
@@ -309,23 +416,82 @@ function listElement(element: HTMLOListElement | HTMLUListElement, slide: HTMLEl
   const box = elementBox(element, slide)
   const markerOffsetPx = Math.max(0, px(style.paddingLeft, 40) - fontPx)
   const markerOffsetIn = markerOffsetPx / PX_PER_IN
+  const items: ListElement["items"] = []
+  const numberStyle = (value: string, suffix: string) => {
+    const paren = suffix.includes(")")
+    const both = suffix.includes("(") && paren
+    const ending = both ? "ParenBoth" : paren ? "ParenR" : "Period"
+    const styles: Record<string, string> = {
+      "decimal": `arabic${ending}`,
+      "lower-alpha": `alphaLc${ending}`,
+      "lower-latin": `alphaLc${ending}`,
+      "upper-alpha": `alphaUc${ending}`,
+      "upper-latin": `alphaUc${ending}`,
+      "lower-roman": `romanLc${ending}`,
+      "upper-roman": `romanUc${ending}`,
+    }
+    return styles[value] ?? `arabic${ending}`
+  }
+  const markerProperties = (li: HTMLLIElement, list: HTMLOListElement | HTMLUListElement) => {
+    const pseudo = getComputedStyle(li, "::before")
+    const marker = getComputedStyle(li, "::marker")
+    const pseudoContent = pseudo.content && pseudo.content !== "none" ? pseudo.content : ""
+    const markerStyle = pseudoContent ? pseudo : marker
+    const quoted = pseudoContent.match(/^["'](.+)["']$/)?.[1]
+    const counter = pseudoContent.match(/counter\([^,)]*(?:,\s*([^)]+))?\)(?:\s*["']([^"']*)["'])?/)
+    const listStyle = counter?.[1]?.trim() || getComputedStyle(li).listStyleType || getComputedStyle(list).listStyleType
+    const suffix = counter?.[2] || (pseudoContent.includes(")") ? ")" : ".")
+    const fallbackCharacter = listStyle === "square" ? "▪" : listStyle === "circle" ? "◦" : "•"
+    return {
+      markerCharacter: list instanceof HTMLUListElement ? (quoted || fallbackCharacter) : undefined,
+      markerColor: cssColor(markerStyle.color || getComputedStyle(li).color),
+      markerFontSize: px(markerStyle.fontSize, px(getComputedStyle(li).fontSize, fontPx)) * 72 / PX_PER_IN,
+      markerBold: Number(markerStyle.fontWeight) >= 600 || markerStyle.fontWeight === "bold",
+      numberStyle: list instanceof HTMLOListElement ? numberStyle(listStyle, suffix) : undefined,
+    }
+  }
+  const normalizedRuns = (li: HTMLLIElement, itemStyle: CSSStyleDeclaration) => {
+    const runs = applyResolvedFonts(textRuns(li, false), itemStyle)
+      .map((run) => ({ ...run, text: run.text.replace(/\s+/g, " ") }))
+      .filter((run) => run.text.length > 0)
+    if (!runs.length) return runs
+    runs[0] = { ...runs[0], text: runs[0].text.trimStart() }
+    runs[runs.length - 1] = { ...runs[runs.length - 1], text: runs[runs.length - 1].text.trimEnd() }
+    return runs.filter((run) => run.text.length > 0)
+  }
+  const walk = (list: HTMLOListElement | HTMLUListElement, level: number) => {
+    Array.from(list.children).filter((child): child is HTMLLIElement => child instanceof HTMLLIElement).forEach((li, index) => {
+      const itemStyle = getComputedStyle(li)
+      const clone = li.cloneNode(true) as HTMLLIElement
+      clone.querySelectorAll("ul,ol").forEach((nested) => nested.remove())
+      items.push({
+        runs: normalizedRuns(clone, itemStyle),
+        index: index + 1,
+        level,
+        ordered: list instanceof HTMLOListElement,
+        fontSize: px(itemStyle.fontSize, fontPx) * 72 / PX_PER_IN,
+        color: cssColor(itemStyle.color),
+        ...markerProperties(li, list),
+      })
+      Array.from(li.children)
+        .filter((child): child is HTMLOListElement | HTMLUListElement => child instanceof HTMLOListElement || child instanceof HTMLUListElement)
+        .forEach((nested) => walk(nested, level + 1))
+    })
+  }
+  walk(element, 0)
   return {
     kind: "list",
     ...box,
     x: box.x + markerOffsetIn,
     w: Math.max(0.1, box.w - markerOffsetIn),
-    items: Array.from(element.querySelectorAll(":scope > li")).map((li, index) => ({
-      runs: applyResolvedFonts(textRuns(li, true), getComputedStyle(li)),
-      index: index + 1,
-    })),
-    ordered: element.tagName === "OL",
+    items,
     fontSize: fontPx * 72 / PX_PER_IN,
     fontFace: weightedFontFace(resolvedFont(itemStyle.fontFamily), itemStyle.fontWeight),
     color: cssColor(itemStyle.color),
     lineSpacingMultiple: lineHeight / fontPx,
     // PptxGenJS defines bullet.indent as the marker-to-text distance, not
     // the list's whole CSS padding-left. One em matches Marp's marker gap.
-    indent: fontPx / PX_PER_IN,
+    indent: px(itemStyle.paddingLeft, fontPx * 1.5) / PX_PER_IN,
   }
 }
 
@@ -352,7 +518,12 @@ function tableElement(element: HTMLTableElement, slide: HTMLElement): TableEleme
       bold: cell.tagName === "TH" || Number(style.fontWeight) >= 700,
       align: style.textAlign === "center" ? "center" as const : style.textAlign === "right" || style.textAlign === "end" ? "right" as const : "left" as const,
       valign: style.verticalAlign === "middle" ? "middle" as const : style.verticalAlign === "bottom" ? "bottom" as const : "top" as const,
-      margin: [px(style.paddingTop) * 72 / PX_PER_IN, px(style.paddingRight) * 72 / PX_PER_IN, px(style.paddingBottom) * 72 / PX_PER_IN, px(style.paddingLeft) * 72 / PX_PER_IN] as [number, number, number, number],
+      margin: [
+        px(style.paddingTop) * 72 / PX_PER_IN,
+        Math.max(0, px(style.paddingRight) * 72 / PX_PER_IN - 1),
+        px(style.paddingBottom) * 72 / PX_PER_IN,
+        Math.max(0, px(style.paddingLeft) * 72 / PX_PER_IN - 1),
+      ] as [number, number, number, number],
       borderColor: cssColor(style.borderTopColor, "#CCCCCC"),
       borderWidth: Math.max(0.5, px(style.borderTopWidth, 1) * 72 / PX_PER_IN),
     }
@@ -363,21 +534,26 @@ function tableElement(element: HTMLTableElement, slide: HTMLElement): TableEleme
 async function captureBackground(slide: HTMLElement, editable: Element[]): Promise<string> {
   const previous = editable.map((element) => {
     const htmlElement = element as HTMLElement
+    const keepHeadingDecoration = /^H[1-6]$/.test(htmlElement.tagName)
+    const property = keepHeadingDecoration ? "color" : "visibility"
     return {
       element: htmlElement,
-      visibility: htmlElement.style.getPropertyValue("visibility"),
-      priority: htmlElement.style.getPropertyPriority("visibility"),
+      property,
+      value: htmlElement.style.getPropertyValue(property),
+      priority: htmlElement.style.getPropertyPriority(property),
     }
   })
   editable.forEach((element) => {
-    (element as HTMLElement).style.setProperty("visibility", "hidden", "important")
+    const htmlElement = element as HTMLElement
+    if (/^H[1-6]$/.test(htmlElement.tagName)) htmlElement.style.setProperty("color", "transparent", "important")
+    else htmlElement.style.setProperty("visibility", "hidden", "important")
   })
   try {
     return await toPng(slide, { pixelRatio: 2, cacheBust: true, skipFonts: false })
   } finally {
-    previous.forEach(({ element, visibility, priority }) => {
-      if (visibility) element.style.setProperty("visibility", visibility, priority)
-      else element.style.removeProperty("visibility")
+    previous.forEach(({ element, property, value, priority }) => {
+      if (value) element.style.setProperty(property, value, priority)
+      else element.style.removeProperty(property)
     })
   }
 }
@@ -462,6 +638,7 @@ export async function convertMarp(markdown: string, customThemeCss = ""): Promis
           } else if (element.tagName === "TABLE") {
             elements.push(tableElement(element as HTMLTableElement, section))
           } else {
+            elements.push(...elementDecorations(element as HTMLElement, section))
             elements.push(textElement(element as HTMLElement, section))
           }
           nativeElements++
@@ -497,10 +674,15 @@ export async function convertMarp(markdown: string, customThemeCss = ""): Promis
       } catch (error) {
         warnings.push({ slide: slideIndex + 1, message: `背景装飾の画像化に失敗: ${error instanceof Error ? error.message : String(error)}` })
       }
-      slides.push({
-        background: cssColor(sectionStyle.backgroundColor, "#ffffff"),
+      const composedBackground = await composeBackground(
+        cssColor(sectionStyle.backgroundColor, "#ffffff"),
         backgroundDataUrls,
         backgroundImages,
+      )
+      slides.push({
+        background: cssColor(sectionStyle.backgroundColor, "#ffffff"),
+        backgroundDataUrls: [composedBackground],
+        backgroundImages: [],
         elements,
         notes: notes[slideIndex],
       })

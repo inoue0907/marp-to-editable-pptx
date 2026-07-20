@@ -7,6 +7,8 @@ export interface TextRun {
   italic?: boolean
   code?: boolean
   fontFace?: string
+  fontSize?: number
+  color?: string
   mathLatex?: string
   mathDisplay?: boolean
 }
@@ -34,8 +36,19 @@ export interface ListElement {
   y: number
   w: number
   h: number
-  items: { runs: TextRun[]; index: number }[]
-  ordered: boolean
+  items: {
+    runs: TextRun[]
+    index: number
+    level: number
+    ordered: boolean
+    fontSize: number
+    color: string
+    markerCharacter?: string
+    markerColor: string
+    markerFontSize: number
+    markerBold: boolean
+    numberStyle?: string
+  }[]
   fontSize: number
   fontFace: string
   color: string
@@ -50,6 +63,18 @@ export interface ImageElement {
   w: number
   h: number
   src: string
+}
+
+export interface ShapeElement {
+  kind: "shape"
+  shape: "rect" | "line"
+  x: number
+  y: number
+  w: number
+  h: number
+  fill?: string
+  lineColor?: string
+  lineWidth?: number
 }
 
 export interface TableCell {
@@ -77,7 +102,7 @@ export interface TableElement {
   rowHeights: number[]
 }
 
-export type SlideElement = TextElement | ListElement | ImageElement | TableElement
+export type SlideElement = TextElement | ListElement | ImageElement | TableElement | ShapeElement
 
 export interface SlideModel {
   background: string
