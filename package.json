@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
+    "marp-pptx": "./scripts/cli.mjs",
     "marp-editable-pptx": "./scripts/cli.mjs"
   },
   "scripts": {
