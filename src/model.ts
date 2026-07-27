@@ -1,4 +1,5 @@
-export const SLIDE_W = 13.333
+// Exact 16:9 PowerPoint wide canvas (equivalent to 1920x1080).
+export const SLIDE_W = 40 / 3
 export const SLIDE_H = 7.5
 
 export interface TextRun {
@@ -9,6 +10,9 @@ export interface TextRun {
   fontFace?: string
   fontSize?: number
   color?: string
+  highlight?: string
+  superscript?: boolean
+  subscript?: boolean
   mathLatex?: string
   mathDisplay?: boolean
 }
@@ -27,7 +31,13 @@ export interface TextElement {
   align: "left" | "center" | "right"
   valign: "top" | "middle" | "bottom"
   lineSpacingMultiple: number
+  lineSpacing: number
   pre?: boolean
+  fill?: string
+  lineColor?: string
+  lineWidth?: number
+  margin?: [number, number, number, number]
+  fit?: "shrink"
 }
 
 export interface ListElement {
@@ -48,11 +58,17 @@ export interface ListElement {
     markerFontSize: number
     markerBold: boolean
     numberStyle?: string
+    markerIndent: number
+    textIndent: number
+    lineSpacing: number
+    paraSpaceBefore: number
+    paraSpaceAfter: number
   }[]
   fontSize: number
   fontFace: string
   color: string
   lineSpacingMultiple: number
+  lineSpacing: number
   indent: number
 }
 
@@ -63,6 +79,17 @@ export interface ImageElement {
   w: number
   h: number
   src: string
+}
+
+export interface VideoElement {
+  kind: "video"
+  x: number
+  y: number
+  w: number
+  h: number
+  src: string
+  extn: string
+  cover?: string
 }
 
 export interface ShapeElement {
@@ -79,6 +106,7 @@ export interface ShapeElement {
 
 export interface TableCell {
   text: string
+  runs: TextRun[]
   fontSize: number
   fontFace: string
   color: string
@@ -102,7 +130,7 @@ export interface TableElement {
   rowHeights: number[]
 }
 
-export type SlideElement = TextElement | ListElement | ImageElement | TableElement | ShapeElement
+export type SlideElement = TextElement | ListElement | ImageElement | VideoElement | TableElement | ShapeElement
 
 export interface SlideModel {
   background: string
