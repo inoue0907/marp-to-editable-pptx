@@ -614,6 +614,28 @@ function elementDecorations(element: HTMLElement, slide: HTMLElement): ShapeElem
   const shapes: ShapeElement[] = []
   const style = getComputedStyle(element)
   const box = elementBox(element, slide)
+  if (/^H[1-6]$/.test(element.tagName)) {
+    const safeBorder = style.borderBottomStyle === "solid"
+      && px(style.borderBottomWidth) > 0
+      && isVisibleColor(style.borderBottomColor)
+      && style.backgroundImage === "none"
+      && style.boxShadow === "none"
+      && style.filter === "none"
+      && style.transform === "none"
+      && style.clipPath === "none"
+    if (safeBorder) {
+      shapes.push({
+        kind: "shape",
+        shape: "line",
+        x: box.x,
+        y: box.y + box.h,
+        w: box.w,
+        h: 0,
+        lineColor: cssColor(style.borderBottomColor),
+        lineWidth: px(style.borderBottomWidth) * 72 / PX_PER_IN,
+      })
+    }
+  }
   if (element.tagName === "BLOCKQUOTE" && calloutStyle() === "shape") {
     if (isVisibleColor(style.backgroundColor)) {
       shapes.push({ kind: "shape", shape: "rect", ...box, fill: cssColor(style.backgroundColor) })
@@ -1163,6 +1185,11 @@ async function captureBackground(slide: HTMLElement, editable: Element[], omitSl
       border-color: transparent !important;
       box-shadow: none !important;
     }
+    svg[data-marpit-svg] [data-marpit-pagination][data-marpit-pagination][data-marpit-pagination]::after {
+      content: "" !important;
+      color: transparent !important;
+      text-shadow: none !important;
+    }
   `
   slide.appendChild(captureStyle)
   const marked = editable.map((element) => {
@@ -1203,6 +1230,62 @@ async function captureBackground(slide: HTMLElement, editable: Element[], omitSl
       else slide.style.removeProperty("background-image")
     }
     captureStyle.remove()
+  }
+}
+
+function paginationStyle(
+  section: HTMLElement,
+  slideRoot: HTMLElement,
+): SlideModel["pagination"] | undefined {
+  if (!section.hasAttribute("data-marpit-pagination")) return undefined
+  const pseudo = getComputedStyle(section, "::after")
+  if (pseudo.display === "none" || pseudo.visibility === "hidden" || Number(pseudo.opacity) === 0) return undefined
+
+  // CSS pseudo-elements have no DOM box API. Materialize a temporary element
+  // with the browser-resolved ::after styles so its exact theme-specific
+  // geometry can be measured against the Marp slide coordinate root.
+  const probe = document.createElement("span")
+  probe.textContent = section.getAttribute("data-marpit-pagination") ?? "1"
+  const copied = [
+    "position", "left", "right", "top", "bottom", "width", "height",
+    "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+    "marginTop", "marginRight", "marginBottom", "marginLeft",
+    "fontFamily", "fontSize", "fontStyle", "fontWeight", "lineHeight",
+    "letterSpacing", "textAlign", "verticalAlign", "boxSizing",
+    "transform", "transformOrigin", "whiteSpace",
+  ] as const
+  for (const property of copied) {
+    const value = pseudo[property]
+    if (value) probe.style[property] = value
+  }
+  probe.style.color = pseudo.color
+  probe.style.background = "transparent"
+  probe.style.border = "0"
+  probe.style.pointerEvents = "none"
+  section.appendChild(probe)
+  const box = elementBox(probe, slideRoot)
+  probe.remove()
+  if (box.w <= 0 || box.h <= 0) return undefined
+
+  const weight = pseudo.fontWeight === "bold" ? 700 : Number.parseInt(pseudo.fontWeight, 10)
+  const align = pseudo.textAlign === "center" || pseudo.textAlign === "right"
+    ? pseudo.textAlign
+    : "left"
+  return {
+    ...box,
+    fontFace: resolvedFont(pseudo.fontFamily),
+    fontSize: px(pseudo.fontSize, 16) * 72 / PX_PER_IN,
+    color: cssColor(pseudo.color),
+    bold: weight >= 700,
+    italic: pseudo.fontStyle === "italic",
+    align,
+    valign: "middle",
+    margin: [
+      px(pseudo.paddingTop) * 72 / PX_PER_IN,
+      px(pseudo.paddingRight) * 72 / PX_PER_IN,
+      px(pseudo.paddingBottom) * 72 / PX_PER_IN,
+      px(pseudo.paddingLeft) * 72 / PX_PER_IN,
+    ],
   }
 }
 
@@ -1285,6 +1368,11 @@ export async function convertMarp(markdown: string, customThemeCss = ""): Promis
       const slideRoot = (section.closest("svg[data-marpit-svg]") as unknown as HTMLElement | null) ?? section
       const editable = topLevelEditable(section)
       const elements: SlideElement[] = []
+      const fixedFooter = Array.from(section.querySelectorAll<HTMLElement>("blockquote"))
+        .find((element) => isFixedFooterBlockquote(element))
+      const footer = fixedFooter
+        ? textElements(fixedFooter, slideRoot).find((element) => element.kind === "text")
+        : undefined
       const injectedBackground = globalThis.__marpPptxBackgrounds?.[slideIndex]
 
       for (const element of editable) {
@@ -1304,7 +1392,11 @@ export async function convertMarp(markdown: string, customThemeCss = ""): Promis
             // CLI background capture already preserves CSS backgrounds and
             // inline-code highlights at exact browser geometry. Adding native
             // rectangles again would create a second, offset highlight.
-            if (!injectedBackground || (element.tagName === "BLOCKQUOTE" && calloutStyle() === "shape")) {
+            if (
+              !injectedBackground ||
+              (element.tagName === "BLOCKQUOTE" && calloutStyle() === "shape") ||
+              /^H[1-6]$/.test(element.tagName)
+            ) {
               elements.push(...elementDecorations(element as HTMLElement, slideRoot))
             }
             elements.push(...textElements(element as HTMLElement, slideRoot))
@@ -1317,6 +1409,7 @@ export async function convertMarp(markdown: string, customThemeCss = ""): Promis
       }
 
       const sectionStyle = getComputedStyle(section)
+      const pagination = paginationStyle(section, slideRoot)
       const backgroundDataUrls: string[] = []
       try {
         if (injectedBackground) {
@@ -1343,6 +1436,8 @@ export async function convertMarp(markdown: string, customThemeCss = ""): Promis
         backgroundDataUrls: [composedBackground],
         backgroundImages: [],
         elements,
+        footer,
+        pagination,
         notes: notes[slideIndex],
       })
     }

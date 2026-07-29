@@ -73,6 +73,47 @@ async function normalizeOpenXmlGeometry(buffer: ArrayBuffer): Promise<ArrayBuffe
   return await zip.generateAsync({ type: "arraybuffer" })
 }
 
+async function enableNativeSlideNumbers(buffer: ArrayBuffer): Promise<ArrayBuffer> {
+  const zip = await JSZip.loadAsync(buffer)
+  const layoutNames = Object.keys(zip.files).filter((name) =>
+    /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(name))
+  const slideNumberShapePattern = /<p:sp>(?:(?!<p:sp>).)*?<p:ph\b[^>]*type="sldNum"(?:(?!<p:sp>).)*?<\/p:sp>/s
+
+  await Promise.all(layoutNames.map(async (name) => {
+    const entry = zip.file(name)
+    if (!entry) return
+    let xml = await entry.async("string")
+    xml = xml.replace(slideNumberShapePattern, "")
+    zip.file(name, xml)
+  }))
+
+  const masterNames = Object.keys(zip.files).filter((name) =>
+    /^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(name))
+  await Promise.all(masterNames.map(async (name) => {
+    const entry = zip.file(name)
+    if (!entry) return
+    let xml = await entry.async("string")
+    xml = xml.replace(slideNumberShapePattern, "")
+    if (/<p:hf\b/.test(xml)) xml = xml.replace(/<p:hf\b([^>]*)\/>/, (_match, attrs) =>
+      `<p:hf${attrs.replace(/\s+sldNum="[^"]*"/g, "")} sldNum="0"/>`)
+    zip.file(name, xml)
+  }))
+
+  const slideNames = Object.keys(zip.files).filter((name) =>
+    /^ppt\/slides\/slide\d+\.xml$/.test(name))
+  await Promise.all(slideNames.map(async (name) => {
+    const entry = zip.file(name)
+    if (!entry) return
+    let xml = await entry.async("string")
+    xml = xml.replace(slideNumberShapePattern, (shape) => shape
+      .replace(/<p:ph\b([^>]*)\/>/, (_match, attrs) =>
+        `<p:ph${attrs.replace(/\s+idx="[^"]*"/g, "")} idx="12"/>`)
+      .replace(/(<a:fld\b[^>]*type="slidenum"[^>]*>[\s\S]*?<a:t>)[\s\S]*?(<\/a:t>)/, "$1$2"))
+    zip.file(name, xml)
+  }))
+  return await zip.generateAsync({ type: "arraybuffer" })
+}
+
 function addText(
   slide: pptxgen.Slide,
   element: TextElement,
@@ -292,6 +333,199 @@ function addShape(slide: pptxgen.Slide, element: ShapeElement) {
   })
 }
 
+function masterPlaceholders(model: SlideModel): pptxgen.SlideMasterProps["objects"] {
+  const textCandidates = model.elements
+    .filter((element): element is TextElement => element.kind === "text" && !element.pre)
+    .filter((element) => element.w > 0.5 && element.h > 0.15)
+  const title = [...textCandidates]
+    .filter((element) => element.y < 3.5)
+    .sort((a, b) => b.fontSize - a.fontSize || a.y - b.y)[0]
+  const content = model.elements.filter((element) =>
+    element !== title &&
+    (element.kind === "text" || element.kind === "list" || element.kind === "table") &&
+    element.w > 0.5 && element.h > 0.15,
+  )
+  const objects: NonNullable<pptxgen.SlideMasterProps["objects"]> = []
+  if (title) {
+    objects.push({
+      placeholder: {
+        text: "",
+        options: {
+          name: "Marp title",
+          type: "title",
+          x: title.x, y: title.y, w: title.w, h: title.h,
+          fontFace: title.fontFace,
+          fontSize: title.fontSize,
+          color: color(title.color),
+          bold: title.bold,
+          align: title.align,
+          valign: title.valign,
+          margin: title.margin ?? 0,
+        },
+      },
+    })
+  }
+  if (content.length) {
+    const left = Math.min(...content.map((element) => element.x))
+    const top = Math.min(...content.map((element) => element.y))
+    const right = Math.max(...content.map((element) => element.x + element.w))
+    const bottom = Math.max(...content.map((element) => element.y + element.h))
+    const representative = content.find((element): element is TextElement => element.kind === "text")
+      ?? content.find((element): element is ListElement => element.kind === "list")
+    objects.push({
+      placeholder: {
+        text: "",
+        options: {
+          name: "Marp content",
+          type: "body",
+          x: left, y: top, w: right - left, h: bottom - top,
+          fontFace: representative?.fontFace,
+          fontSize: representative?.fontSize,
+          color: representative ? color(representative.color) : undefined,
+          align: representative?.kind === "text" ? representative.align : "left",
+          valign: "top",
+          margin: representative?.kind === "text" ? representative.margin ?? 0 : 0,
+        },
+      },
+    })
+  }
+  for (const element of model.elements) {
+    if (
+      element.kind === "shape" &&
+      element.shape === "line" &&
+      element.w > 6 &&
+      Math.abs(element.h) < 0.001 &&
+      (element.lineWidth ?? 0) <= 6
+    ) {
+      objects.push({
+        line: {
+          x: element.x, y: element.y, w: element.w, h: element.h,
+          line: { color: color(element.lineColor ?? "#000000"), width: element.lineWidth ?? 1 },
+        },
+      })
+    }
+  }
+  return objects
+}
+
+function layoutKind(model: SlideModel): string {
+  const placeholders = masterPlaceholders(model) ?? []
+  const hasTitle = placeholders.some((object) => "placeholder" in object &&
+    object.placeholder.options.type === "title")
+  const hasBody = placeholders.some((object) => "placeholder" in object &&
+    object.placeholder.options.type === "body")
+  const structuralElements = model.elements.filter((element) =>
+    element.kind !== "text" || element.fontSize < 40)
+  const multiColumn = structuralElements.some((left, index) =>
+    left.w < 6.5 && structuralElements.slice(index + 1).some((right) =>
+      right.w < 6.5 &&
+      Math.abs(left.x - right.x) > 3 &&
+      left.y < right.y + right.h &&
+      right.y < left.y + left.h))
+  const structure = !hasBody ? "cover"
+    : structuralElements.some((element) => element.kind === "table") ? "table"
+    : structuralElements.some((element) => element.kind === "video") ? "video"
+    : multiColumn ? "columns"
+    : structuralElements.some((element) => element.kind === "text" && element.pre) ? "code"
+    : structuralElements.some((element) => element.kind === "image") ? "image"
+    : structuralElements.some((element) => element.kind === "list") ? "list"
+    : structuralElements.some((element) => element.kind === "shape") ? "callout"
+    : "content"
+  return [
+    hasTitle ? "title" : "no-title",
+    model.footer ? "footer" : "no-footer",
+    structure,
+  ].join("-")
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length / 2)] ?? 0
+}
+
+function canonicalPagination(slides: SlideModel[]): SlideModel["pagination"] | undefined {
+  const candidates = slides.map((slide) => slide.pagination).filter((value) => value != null)
+  if (!candidates.length) return undefined
+  const lowerHalf = candidates.filter((value) => value.y > 3.75 && value.w < 3 && value.h < 1)
+  const source = lowerHalf.length >= Math.ceil(candidates.length / 2) ? lowerHalf : candidates
+  const representative = source
+    .map((value) => ({ value, distance:
+      Math.abs(value.x - median(source.map((item) => item.x))) +
+      Math.abs(value.y - median(source.map((item) => item.y))) }))
+    .sort((a, b) => a.distance - b.distance)[0].value
+  return {
+    ...representative,
+    x: median(source.map((value) => value.x)),
+    y: median(source.map((value) => value.y)),
+    w: median(source.map((value) => value.w)),
+    h: Math.min(median(source.map((value) => value.h)), representative.fontSize * 1.4 / 72),
+    valign: "top",
+    margin: [0, 0, 0, 0],
+  }
+}
+
+function defineSlideMasters(pptx: pptxgen, slides: SlideModel[]): string[] {
+  const canonicalNumber = canonicalPagination(slides)
+  const representatives = new Map<string, SlideModel>()
+  for (const slide of slides) {
+    const key = layoutKind(slide)
+    if (!representatives.has(key)) representatives.set(key, slide)
+  }
+  const names = new Map<string, string>()
+  let layoutIndex = 0
+  for (const [key, model] of representatives) {
+    const masterTitle = `Marp ${key.replaceAll("-", " ")}`
+    names.set(key, masterTitle)
+    const backgroundImage = model.backgroundDataUrls?.[0]
+    const objects = masterPlaceholders(model) ?? []
+    pptx.defineSlideMaster({
+      title: masterTitle,
+      background: backgroundImage
+        ? { data: backgroundImage, path: `marp-layout-${++layoutIndex}.png` }
+        : { color: color(model.background) },
+      objects,
+      slideNumber: canonicalNumber
+        ? {
+            x: canonicalNumber.x, y: canonicalNumber.y, w: canonicalNumber.w, h: canonicalNumber.h,
+            fontFace: canonicalNumber.fontFace,
+            fontSize: canonicalNumber.fontSize,
+            color: color(canonicalNumber.color),
+            bold: canonicalNumber.bold,
+            italic: canonicalNumber.italic,
+            align: canonicalNumber.align,
+            valign: canonicalNumber.valign,
+            margin: canonicalNumber.margin,
+          }
+        : undefined,
+    })
+  }
+  return slides.map((slide) => names.get(layoutKind(slide))!)
+}
+
+function inferTheme(result: ConversionResult): pptxgen.ThemeProps {
+  const headingFonts = new Map<string, number>()
+  const bodyFonts = new Map<string, number>()
+  for (const slide of result.slides) {
+    const texts = slide.elements.filter((element): element is TextElement => element.kind === "text")
+    const largest = texts.reduce<TextElement | undefined>(
+      (current, element) => !current || element.fontSize > current.fontSize ? element : current,
+      undefined,
+    )
+    if (largest) headingFonts.set(largest.fontFace, (headingFonts.get(largest.fontFace) ?? 0) + 1)
+    for (const element of slide.elements) {
+      if (element.kind === "text" || element.kind === "list") {
+        bodyFonts.set(element.fontFace, (bodyFonts.get(element.fontFace) ?? 0) + 1)
+      }
+    }
+  }
+  const mostCommon = (counts: Map<string, number>, fallback: string) =>
+    [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? fallback
+  return {
+    headFontFace: mostCommon(headingFonts, "Arial"),
+    bodyFontFace: mostCommon(bodyFonts, "Arial"),
+  }
+}
+
 function addSlide(
   pptx: pptxgen,
   model: SlideModel,
@@ -302,9 +536,22 @@ function addSlide(
 ) {
   const slide = pptx.addSlide()
   const backgroundImage = model.backgroundDataUrls?.[0]
-  slide.background = backgroundImage
-    ? { data: backgroundImage, path: "background.png" }
-    : { color: color(model.background) }
+  if (backgroundImage) slide.background = { data: backgroundImage }
+  if (model.pagination) {
+    const pagination = model.pagination
+    slide.slideNumber = {
+      x: pagination.x, y: pagination.y, w: pagination.w, h: pagination.h,
+      fontFace: pagination.fontFace,
+      fontSize: pagination.fontSize,
+      color: color(pagination.color),
+      bold: pagination.bold,
+      italic: pagination.italic,
+      align: pagination.align,
+      valign: pagination.valign,
+      margin: pagination.margin,
+    }
+  }
+  if (model.footer) addText(slide, model.footer, slideIndex, mathPatches, codeIndentPatches)
   for (const element of model.elements) {
     const geometry = [element.x, element.y, element.w, element.h]
     if (!geometry.every(Number.isFinite)) continue
@@ -337,6 +584,7 @@ export async function exportEditablePptx(result: ConversionResult): Promise<void
   pptx.layout = "LAYOUT_WIDE"
   pptx.title = result.title
   pptx.author = result.author
+  pptx.theme = inferTheme(result)
   const mathPatches: MathPatch[] = []
   const markerPatches: ListMarkerPatch[] = []
   const codeIndentPatches: CodeIndentPatch[] = []
@@ -344,7 +592,8 @@ export async function exportEditablePptx(result: ConversionResult): Promise<void
     addSlide(pptx, slide, index, mathPatches, markerPatches, codeIndentPatches))
   const buffer = await pptx.write({ outputType: "arraybuffer" }) as ArrayBuffer
   const normalizedBuffer = await normalizeOpenXmlGeometry(buffer)
-  const styledBuffer = await injectListMarkerStyles(normalizedBuffer, markerPatches)
+  const numberedBuffer = await enableNativeSlideNumbers(normalizedBuffer)
+  const styledBuffer = await injectListMarkerStyles(numberedBuffer, markerPatches)
   const indentedBuffer = await injectCodeIndents(styledBuffer, codeIndentPatches)
   const blob = await injectNativeMath(indentedBuffer, mathPatches)
   const url = URL.createObjectURL(blob)
