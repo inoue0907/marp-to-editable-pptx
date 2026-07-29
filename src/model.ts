@@ -137,6 +137,21 @@ export interface SlideModel {
   backgroundDataUrls?: string[]
   backgroundImages?: ImageElement[]
   elements: SlideElement[]
+  footer?: TextElement
+  pagination?: {
+    x: number
+    y: number
+    w: number
+    h: number
+    fontFace: string
+    fontSize: number
+    color: string
+    bold: boolean
+    italic: boolean
+    align: "left" | "center" | "right"
+    valign: "top" | "middle" | "bottom"
+    margin: [number, number, number, number]
+  }
   notes?: string
 }
 

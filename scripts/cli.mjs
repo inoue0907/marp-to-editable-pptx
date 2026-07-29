@@ -398,20 +398,26 @@ svg[data-marpit-svg] { display: block; width: 1280px; height: 720px; max-width: 
           return (style.position === "absolute" || style.position === "fixed") && style.bottom !== "auto"
         }
         svg.querySelectorAll("section blockquote").forEach((blockquote) => {
-          if (!isFixedFooter(blockquote)) return
-          ;[blockquote, ...blockquote.querySelectorAll("*")].forEach((target) => {
-            const style = getComputedStyle(target)
-            target.setAttribute("data-marp-pptx-fixed-footer", "")
-            target.style.setProperty("--marp-pptx-fixed-footer-color", style.color)
-            target.style.setProperty("--marp-pptx-fixed-footer-shadow", style.textShadow)
-          })
+          if (isFixedFooter(blockquote)) blockquote.setAttribute("data-marp-pptx-fixed-footer", "")
         })
+        svg.querySelectorAll("section h1, section h2, section h3, section h4, section h5, section h6")
+          .forEach((heading) => {
+            const style = getComputedStyle(heading)
+            const safeBorder = style.borderBottomStyle === "solid" &&
+              Number.parseFloat(style.borderBottomWidth) > 0 &&
+              style.borderBottomColor !== "transparent" &&
+              style.backgroundImage === "none" &&
+              style.boxShadow === "none" &&
+              style.filter === "none" &&
+              style.transform === "none" &&
+              style.clipPath === "none"
+            if (safeBorder) heading.setAttribute("data-marp-pptx-simple-title-border", "")
+          })
         svg.querySelectorAll(
           "section h1, section h2, section h3, section h4, section h5, section h6," +
           "section p, section li, section blockquote, section pre, section code," +
           "section header, section footer, section figcaption",
         ).forEach((element) => {
-          if (isFixedFooter(element)) return
           ;[element, ...element.querySelectorAll("*")].forEach((target) => {
             const value = target.style.getPropertyValue("color")
             const priority = target.style.getPropertyPriority("color")
@@ -506,8 +512,15 @@ svg[data-marpit-svg] { display: block; width: 1280px; height: 720px; max-width: 
           section[data-marpit-advanced-background="content"] img,
           section table { visibility: hidden !important; }
           section [data-marp-pptx-fixed-footer] {
-            color: var(--marp-pptx-fixed-footer-color) !important;
-            text-shadow: var(--marp-pptx-fixed-footer-shadow) !important;
+            visibility: hidden !important;
+          }
+          section [data-marp-pptx-simple-title-border] {
+            border-bottom-color: transparent !important;
+          }
+          svg[data-marpit-svg] section[data-marpit-pagination][data-marpit-pagination][data-marpit-pagination]::after {
+            content: "" !important;
+            color: transparent !important;
+            text-shadow: none !important;
           }
         `
         svg.appendChild(mask)
@@ -528,11 +541,10 @@ svg[data-marpit-svg] { display: block; width: 1280px; height: 720px; max-width: 
       await conversionHost.evaluate((host) => host.style.removeProperty("transform"))
       await slide.evaluate((svg) => {
         svg.querySelector("[data-marp-pptx-cli-mask]")?.remove()
-        svg.querySelectorAll("[data-marp-pptx-fixed-footer]").forEach((target) => {
-          target.removeAttribute("data-marp-pptx-fixed-footer")
-          target.style.removeProperty("--marp-pptx-fixed-footer-color")
-          target.style.removeProperty("--marp-pptx-fixed-footer-shadow")
-        })
+        svg.querySelectorAll("[data-marp-pptx-fixed-footer]").forEach((target) =>
+          target.removeAttribute("data-marp-pptx-fixed-footer"))
+        svg.querySelectorAll("[data-marp-pptx-simple-title-border]").forEach((target) =>
+          target.removeAttribute("data-marp-pptx-simple-title-border"))
         for (const saved of svg.__marpPptxMaskedTextStyles ?? []) {
           if (Object.hasOwn(saved, "backgroundColor")) {
             if (saved.backgroundColor) saved.target.style.setProperty("background-color", saved.backgroundColor, saved.backgroundColorPriority)
